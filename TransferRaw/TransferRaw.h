@@ -25,11 +25,21 @@
 #error Please choose a sensor model: either IMX316 or IMX516.
 #endif
 
+#define FREC_100M	1000000
+#define FREC_60M	600000
+#define FREC		FREC_100M
+
+#define C	299792458
+#define PI	acos(-1)
+
 /* save a, b group in 3 byte/pixel */
 #define RAW_SIZE    IMG_WIDTH * ((IMG_HEIGHT + EBD_LINE) * IMG_PHASE) * 3
 
 /* raw 12 saving size */
 #define IMG_SIZE	IMG_WIDTH * (IMG_HEIGHT * IMG_PHASE) * 2
+
+/* a frame size */
+#define FRAME_SIZE	IMG_WIDTH * IMG_HEIGHT
 
 /* embeded line range */
 #define EBD_LINE_START(no)			IMG_WIDTH * (IMG_HEIGHT * (no) + EBD_LINE * ((no) - 1)) * 3

@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <iomanip>
 #include <windows.h>
 #include <direct.h>
 #include <stdlib.h>
@@ -21,7 +22,7 @@ bool CreateWorkingDir(void)
 	SYSTEMTIME curTime;
 	GetLocalTime(&curTime);
 
-	sprintf_s(newDir, "%04d%02d%02dT%02d%02d%02d",
+	sprintf_s(newDir, "%04d%02d%02dT%02d%02d%02d",	/* ISO 8601 */
 		curTime.wYear, curTime.wMonth, curTime.wDay, curTime.wHour, curTime.wMinute, curTime.wSecond);
 
 	if (_mkdir(newDir) != 0) {
@@ -95,29 +96,57 @@ bool TransferRaw(BYTE* originRaw, BYTE* outputA, BYTE* outputB)
 	return true;
 }
 
-bool SaveConfidence(BYTE* inputA, BYTE* inputB, BYTE* outputConfidence)
+/**
+	Phase0 = |A0 - B0| (  0 deg)
+	Phase1 = |A1 - B1| ( 90 deg)
+	Phase2 = |A2 - B2| (180 deg)
+	Phase3 = |A3 - B3| (270 deg)
+
+	I = Phase0 - Phase2
+	Q = Phase3 - Phase1
+	
+	Confidence = |I| + |Q|
+
+					     arctan(Q/I)	    C
+						------------- * --------
+							 2PI		  frec
+	Distance (depth) = --------------------------
+								   2
+ */ 
+bool SaveConfidenceAndDepth(BYTE* inputA, BYTE* inputB, BYTE* outputConfidence, double* outputDepth)
 {
-	size_t imageIndex = 0;
+	size_t imageIndex = 0, depthIndex = 0;
 
 	for (int i = 0; i < IMG_SIZE / IMG_PHASE; i += 2) {
 		int *phase = new int[IMG_PHASE]();
 
 		for (int j = 0; j < IMG_PHASE; ++j) {
-			phase[j] = RAW12(inputA, (i + (IMG_SIZE / IMG_PHASE) * j)) - RAW12(inputB, (i + (IMG_SIZE / IMG_PHASE) * j));
+			phase[j] = RAW12(inputA, (i + (IMG_SIZE / IMG_PHASE) * j)) - 
+					   RAW12(inputB, (i + (IMG_SIZE / IMG_PHASE) * j));
 		}
 
-		int imgI = phase[0] - phase[2];
-		int imgQ = phase[3] - phase[1];
+		int imgI = phase[0] - phase[2];		/*   0 deg - 180 deg */
+		int imgQ = phase[3] - phase[1];		/* 270 deg -  90 deg */
+
+		double angle = atan2((double)imgQ, (double)imgI);
+		angle = angle < 0 ? angle + 2 * PI : angle;
+
 		int confidence = abs(imgI) + abs(imgQ);
 
+		outputDepth[depthIndex++] = ((angle / (2 * PI)) * (C / FREC)) / 2;
 		outputConfidence[imageIndex++] = (BYTE)(confidence >> 8);
 		outputConfidence[imageIndex++] = (BYTE)(confidence & 0x0FF);
 
 		delete[] phase;
-	} 
+	}
 
 	if (imageIndex != IMG_SIZE / IMG_PHASE) {
 		cout << "Calculate confidence size error: " << imageIndex << endl;
+		return false;
+	}
+
+	if (depthIndex != FRAME_SIZE) {
+		cout << "Calculate depth size error: " << depthIndex << endl;
 		return false;
 	}
 
@@ -126,17 +155,43 @@ bool SaveConfidence(BYTE* inputA, BYTE* inputB, BYTE* outputConfidence)
 
 bool SaveResult(BYTE* buf, string path, size_t fileSize)
 {
+	/* save as ${newdir}\${path}_${transferCnt}.raw */
 	string filePath(newDir + string("\\") + path + string("_") + to_string(transferCnt) + string(".raw"));
 	ofstream fres(filePath, ios::out | ios::binary);
 
 	if (!fres) {
-		cout << "Cannot create file: " << path << endl;
+		cout << "Cannot create file: " << filePath << endl;
 		return false;
 	}
 
 	fres.write((char*)buf, fileSize);
 	fres.close();
 
+	cout << filePath << endl;
+	return true;
+}
+
+bool SaveCSV(double* buf, string path, size_t count) 
+{
+	/* save as ${newdir}\${path}_${transferCnt}.csv */
+	string filePath(newDir + string("\\") + path + string("_") + to_string(transferCnt) + string(".csv"));
+	ofstream fres(filePath, ios::out);
+
+	if (!fres) {
+		cout << "Cannot create file: " << filePath << endl;
+		return false;
+	}
+
+	for (int i = 0; i < count; ++i) {
+		fres << std::fixed << std::setprecision(8) << buf[i] << ",";
+		if (!((i + 1) % IMG_WIDTH)) {
+			fres << endl;
+		}
+	}
+
+	fres.close();
+
+	cout << filePath << endl;
 	return true;
 }
 
@@ -155,12 +210,15 @@ int main(int argc, char* argv[])
 		BYTE* originBuf = new BYTE[RAW_SIZE]();
 		BYTE* confidenceBuf = new BYTE[IMG_SIZE / IMG_PHASE]();
 
+		double* depthBuf = new double[FRAME_SIZE]();
+
 		ASSERT(OpenOriginRaw(rawPath, originBuf));
 		ASSERT(TransferRaw(originBuf, aBuf, bBuf));
-		ASSERT(SaveConfidence(aBuf, bBuf, confidenceBuf));
+		ASSERT(SaveConfidenceAndDepth(aBuf, bBuf, confidenceBuf, depthBuf));
 		ASSERT(SaveResult(aBuf, "a", IMG_SIZE));
 		ASSERT(SaveResult(bBuf, "b", IMG_SIZE));
 		ASSERT(SaveResult(confidenceBuf, "confidence", IMG_SIZE / IMG_PHASE));
+		ASSERT(SaveCSV(depthBuf, "depth", FRAME_SIZE));
 
 		cout << "Transfer success (" << transferCnt++ << ")." << endl;
 
@@ -169,6 +227,7 @@ int main(int argc, char* argv[])
 		delete[] bBuf;
 		delete[] originBuf;
 		delete[] confidenceBuf;
+		delete[] depthBuf;
 
 		cout << "Drop target raw file here: ";
 	}
